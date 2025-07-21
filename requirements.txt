@@ -3,6 +3,8 @@ pdfplumber==0.10.3
 numpy==1.24.4
 scikit-learn==1.3.2
 sentence-transformers==2.2.2
+huggingface-hub==0.17.3
+gitpython==3.1.40
 spacy==3.5.4
 thinc==8.1.10
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.5.0/en_core_web_sm-3.5.0-py3-none-any.whl
