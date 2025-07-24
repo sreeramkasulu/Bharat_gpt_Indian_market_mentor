@@ -1,5 +1,3 @@
 [general]
 postRun = "python -m spacy download en_core_web_sm"
 
-[python]
-version = "3.10"
