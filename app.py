@@ -2,98 +2,82 @@ import os
 import streamlit as st
 import pdfplumber
 import spacy
-import torch
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
+from langchain.text_splitter import SentenceTransformersTokenTextSplitter
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain_core.runnables import RunnableMap
+from langchain_community.llms import HuggingFacePipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 
-# --- Move this here, immediately after imports ---
+# Streamlit UI Setup
 st.set_page_config(page_title="BharatGPT", page_icon="🤖")
+st.title("💬 BharatGPT — Your Indian Market Mentor 🤖")
 
-# Silence warnings
-os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-
-# Load SpaCy NLP (this can take some time)
-nlp = spacy.load("en_core_web_sm")
-
-# Safe CPU loading for SentenceTransformer
-retriever = SentenceTransformer("all-MiniLM-L6-v2")
-
-# Cache the generator loading
-@st.cache_resource
-def load_generator():
-    tokenizer = AutoTokenizer.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
-    model = AutoModelForSeq2SeqLM.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
-    return tokenizer, model.to("cpu")
-
-tokenizer, generator = load_generator()
-
-# PDF Processing
+# Load PDF
 PDF_PATH = "static/your_doc.pdf"
 
 @st.cache_data(show_spinner=False)
-def extract_sentences(pdf_path):
-    extracted = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_number, page in enumerate(pdf.pages, start=1):
-            text = page.extract_text()
-            if text:
-                doc = nlp(text)
-                for sent in doc.sents:
-                    extracted.append((sent.text.strip(), page_number))
-    return extracted
+def load_docs(pdf_path):
+    loader = PyPDFLoader(pdf_path)
+    raw_pages = loader.load_and_split()
+    return raw_pages
 
-sentences = extract_sentences(PDF_PATH)
+docs = load_docs(PDF_PATH)
 
-# RAG Sentence Retriever
-def get_relevant_sentences(question, threshold=0.5):
-    all_text = [s for s, _ in sentences]
-    q_embed = retriever.encode([question])
-    s_embed = retriever.encode(all_text)
-    scores = cosine_similarity(q_embed, s_embed)[0]
-    matched = [(text, score) for (text, _), score in zip(sentences, scores) if score >= threshold]
-    return [t for t, _ in sorted(matched, key=lambda x: -x[1])]
+# Sentence-level splitting
+@st.cache_data(show_spinner=False)
+def split_sentences(_docs):
+    splitter = SentenceTransformersTokenTextSplitter(chunk_overlap=0)
+    return splitter.split_documents(_docs)
 
-# Prompt with fallback
-def is_question_answerable(question, context):
-    prompt = (
-        "You are an AI Assistant. Answer queries clearly only from the attached document. "
-        "If the question is out of context, say \"I don't have an answer for this.\"\n\n"
-        f"Context: {context}\n"
-        f"Question: {question}\n"
-        f"Answer:"
-    )
-    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
-    output = generator.generate(**inputs, max_new_tokens=100)
-    result = tokenizer.decode(output[0], skip_special_tokens=True)
-    return result.strip()
+split_docs = split_sentences(docs)
 
-# UI and styling
-st.markdown("""
-    <style>
-    body { background: linear-gradient(to bottom right, #f0f9ff, #d9f0e1); }
-    .stTextInput > div > div > input {
-        font-size: 16px;
-        padding: 10px;
-        border-radius: 6px;
-    }
-    .stButton > button {
-        background-color: #2196f3;
-        color: white;
-        border-radius: 6px;
-        padding: 8px 20px;
-        font-size: 15px;
-    }
-    .stButton > button:hover {
-        background-color: #1976d2;
-    }
-    </style>
-""", unsafe_allow_html=True)
 
-st.title("💬 BharatGPT — Your Indian Market Mentor 🤖")
+# Embedding model for retrieval
+@st.cache_resource
+def build_retriever():
+    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    db = FAISS.from_documents(split_docs, embedding_model)
+    return db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
+retriever = build_retriever()
+
+# Prompt (just returning matched sentences)
+prompt_template = PromptTemplate.from_template("""
+You are BharatGPT, a strict assistant that only answers from the attached document. 
+Return only the original sentence(s) from the document that match the question. Do not rephrase, summarize, or guess.
+
+If nothing matches, say: "I don't have an answer for this."
+
+Context: {context}
+Question: {question}
+Answer:
+""")
+
+# Load HuggingFace T5 model
+@st.cache_resource
+def load_model():
+    model = AutoModelForSeq2SeqLM.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
+    tokenizer = AutoTokenizer.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
+    pipe = pipeline("text2text-generation", model=model, tokenizer=tokenizer, max_new_tokens=128)
+    return HuggingFacePipeline(pipeline=pipe)
+
+llm = load_model()
+
+# RAG chain setup
+rag_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=retriever,
+    chain_type="stuff",
+    chain_type_kwargs={"prompt": prompt_template},
+    return_source_documents=True
+)
+
+# Sidebar instructions
 with st.expander("💡 What Can You Ask?", expanded=True):
     st.markdown("""
     Ask BharatGPT about:
@@ -104,23 +88,18 @@ with st.expander("💡 What Can You Ask?", expanded=True):
     - 💡 Examples like MYNUSCo, Recykal, or BioE3 Policy  
     """)
 
+# Ask a question
 question = st.text_input("Type your question", placeholder="e.g. What is circular economy?")
 
 if st.button("Get Answer"):
-    if question.strip() == "":
+    if not question.strip():
         st.warning("❗ Please enter a valid question.")
     else:
         with st.spinner("🔍 Searching..."):
-            matched_sents = get_relevant_sentences(question)
-            if matched_sents:
-                context = " ".join(matched_sents[:5])
-                verdict = is_question_answerable(question, context)
-                st.markdown("### ✅ ANSWER:")
-                if "I don't have an answer" in verdict:
-                    st.error("❗No Answer: It's Out of Context")
-                else:
-                    for s in matched_sents:
-                        st.success(s)
+            result = rag_chain({"query": question})
+            response = result["result"]
+            if "I don't have an answer" in response:
+                st.error("❗ No Answer: It's Out of Context")
             else:
-                st.markdown("### ✅ ANSWER:")
-                st.error("❗No Answer: It's Out of Context")
+                st.markdown("### ✅ Matched Sentences:")
+                st.success(response.strip())
