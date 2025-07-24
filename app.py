@@ -1,9 +1,4 @@
 import os
-import spacy.cli
-
-# 🔽 Ensure SpaCy model is downloaded (Streamlit Cloud needs this)
-spacy.cli.download("en_core_web_sm")
-
 import streamlit as st
 import pdfplumber
 import spacy
@@ -19,6 +14,7 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 # Load SpaCy NLP
 nlp = spacy.load("en_core_web_sm")
+
 
 # ✅ Safe CPU loading (no .to() call)
 retriever = SentenceTransformer("all-MiniLM-L6-v2")  # CPU by default
