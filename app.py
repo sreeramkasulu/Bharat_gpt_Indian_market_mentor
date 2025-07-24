@@ -42,7 +42,7 @@ split_docs = split_sentences(docs)
 def build_retriever():
     embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     db = FAISS.from_documents(split_docs, embedding_model)
-    return db.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+    return db.as_retriever(search_type="similarity", search_kwargs={"k": 5})
 
 retriever = build_retriever()
 
