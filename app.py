@@ -8,18 +8,20 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
+# --- Move this here, immediately after imports ---
+st.set_page_config(page_title="BharatGPT", page_icon="🤖")
+
 # Silence warnings
 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
-# Load SpaCy NLP
+# Load SpaCy NLP (this can take some time)
 nlp = spacy.load("en_core_web_sm")
 
+# Safe CPU loading for SentenceTransformer
+retriever = SentenceTransformer("all-MiniLM-L6-v2")
 
-# ✅ Safe CPU loading (no .to() call)
-retriever = SentenceTransformer("all-MiniLM-L6-v2")  # CPU by default
-
-# ✅ Load LaMini model for generating answers
+# Cache the generator loading
 @st.cache_resource
 def load_generator():
     tokenizer = AutoTokenizer.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
@@ -68,9 +70,7 @@ def is_question_answerable(question, context):
     result = tokenizer.decode(output[0], skip_special_tokens=True)
     return result.strip()
 
-# Streamlit UI
-st.set_page_config(page_title="BharatGPT", page_icon="🤖")
-
+# UI and styling
 st.markdown("""
     <style>
     body { background: linear-gradient(to bottom right, #f0f9ff, #d9f0e1); }
