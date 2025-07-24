@@ -1,4 +1,9 @@
 import os
+import spacy.cli
+
+# 🔽 Ensure SpaCy model is downloaded (Streamlit Cloud needs this)
+spacy.cli.download("en_core_web_sm")
+
 import streamlit as st
 import pdfplumber
 import spacy
@@ -8,12 +13,7 @@ from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-# 🔽 New line added to ensure deployment works (required by Streamlit Cloud)
-import spacy.cli
-spacy.cli.download("en_core_web_sm")
-  # Downloads model at runtime
-
-# Silence warnings (optional but helpful)
+# Silence warnings
 os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
