@@ -1,18 +1,40 @@
+import os
 import streamlit as st
 import pdfplumber
 import spacy
+import torch
+import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
-# Load NLP models
+# 🔽 New line added to ensure deployment works (required by Streamlit Cloud)
+import spacy.cli
+spacy.cli.download("en_core_web_sm")
+
+# Silence warnings (optional but helpful)
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+# Load SpaCy NLP
 nlp = spacy.load("en_core_web_sm")
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Extract text from PDF
+# ✅ Safe CPU loading (no .to() call)
+retriever = SentenceTransformer("all-MiniLM-L6-v2")  # CPU by default
+
+# ✅ Load LaMini model for generating answers
+@st.cache_resource
+def load_generator():
+    tokenizer = AutoTokenizer.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
+    model = AutoModelForSeq2SeqLM.from_pretrained("MBZUAI/LaMini-Flan-T5-248M")
+    return tokenizer, model.to("cpu")
+
+tokenizer, generator = load_generator()
+
+# PDF Processing
 PDF_PATH = "static/your_doc.pdf"
-sentences = []
 
+@st.cache_data(show_spinner=False)
 def extract_sentences(pdf_path):
     extracted = []
     with pdfplumber.open(pdf_path) as pdf:
@@ -24,24 +46,35 @@ def extract_sentences(pdf_path):
                     extracted.append((sent.text.strip(), page_number))
     return extracted
 
-@st.cache_data(show_spinner=False)
-def preload_sentences():
-    return extract_sentences(PDF_PATH)
+sentences = extract_sentences(PDF_PATH)
 
-sentences = preload_sentences()
+# RAG Sentence Retriever
+def get_relevant_sentences(question, threshold=0.5):
+    all_text = [s for s, _ in sentences]
+    q_embed = retriever.encode([question])
+    s_embed = retriever.encode(all_text)
+    scores = cosine_similarity(q_embed, s_embed)[0]
+    matched = [(text, score) for (text, _), score in zip(sentences, scores) if score >= threshold]
+    return [t for t, _ in sorted(matched, key=lambda x: -x[1])]
 
-def find_best_sentences(question, threshold=0.5):
-    sent_texts = [s for s, _ in sentences]
-    question_emb = model.encode([question])
-    sent_emb = model.encode(sent_texts)
-    similarities = cosine_similarity(question_emb, sent_emb)[0]
-    matched = [text for (text, _), score in zip(sentences, similarities) if score >= threshold]
-    return matched if matched else ["❗No Answer: It's Out of Context"]
+# Prompt with fallback
+def is_question_answerable(question, context):
+    prompt = (
+        "You are an AI Assistant. Answer queries clearly only from the attached document. "
+        "If the question is out of context, say \"I don't have an answer for this.\"\n\n"
+        f"Context: {context}\n"
+        f"Question: {question}\n"
+        f"Answer:"
+    )
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=512)
+    output = generator.generate(**inputs, max_new_tokens=100)
+    result = tokenizer.decode(output[0], skip_special_tokens=True)
+    return result.strip()
 
-# 🌐 UI STARTS HERE
+# Streamlit UI
 st.set_page_config(page_title="BharatGPT", page_icon="🤖")
-st.markdown(
-    """
+
+st.markdown("""
     <style>
     body { background: linear-gradient(to bottom right, #f0f9ff, #d9f0e1); }
     .stTextInput > div > div > input {
@@ -60,8 +93,7 @@ st.markdown(
         background-color: #1976d2;
     }
     </style>
-    """, unsafe_allow_html=True
-)
+""", unsafe_allow_html=True)
 
 st.title("💬 BharatGPT — Your Indian Market Mentor 🤖")
 
@@ -75,8 +107,6 @@ with st.expander("💡 What Can You Ask?", expanded=True):
     - 💡 Examples like MYNUSCo, Recykal, or BioE3 Policy  
     """)
 
-st.markdown("## ")
-
 question = st.text_input("Type your question", placeholder="e.g. What is circular economy?")
 
 if st.button("Get Answer"):
@@ -84,7 +114,16 @@ if st.button("Get Answer"):
         st.warning("❗ Please enter a valid question.")
     else:
         with st.spinner("🔍 Searching..."):
-            answers = find_best_sentences(question)
-        st.markdown("### ✅ ANSWER:")
-        for ans in answers:
-            st.success(ans)
+            matched_sents = get_relevant_sentences(question)
+            if matched_sents:
+                context = " ".join(matched_sents[:5])
+                verdict = is_question_answerable(question, context)
+                st.markdown("### ✅ ANSWER:")
+                if "I don't have an answer" in verdict:
+                    st.error("❗No Answer: It's Out of Context")
+                else:
+                    for s in matched_sents:
+                        st.success(s)
+            else:
+                st.markdown("### ✅ ANSWER:")
+                st.error("❗No Answer: It's Out of Context")
